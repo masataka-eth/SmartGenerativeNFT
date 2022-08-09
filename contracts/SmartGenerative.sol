@@ -1,94 +1,107 @@
-// SPDX-License-Identifier: MIT
-pragma solidity >=0.7.0 <0.9.0;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.9;
 
 import './external/erc721a/contracts/ERC721A.sol';
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+import { BitOpe } from './libs/BitOpe.sol';
 //import "hardhat/console.sol"; // Hardhat console log
 
-/**
- * @title SmartGenerative
- * @notice Mint Generative NFT (add RRC721A and WL's MerkleProof)
- */
 contract SmartGenerative is ERC721A, Ownable {
-    //address public constant withdrawAddress = 0x6A1Ebf8f64aA793b4113E9D76864ea2264A5d482;
+    using BitOpe for uint64;
+    enum Phase {
+        BeforeMint,
+        WLMint,
+        PublicMint
+    }
+
+    address public constant withdrawAddress = 0x6A1Ebf8f64aA793b4113E9D76864ea2264A5d482;
+    uint256 public maxSupply = 10000;
+    uint256 public preLimitMint = 2;
+    uint256 public publicMaxMint = 1;
     uint256 public cost = 0.001 ether;
-    uint256 public maxSupply = 20;
-    uint256 public maxMintAmount = 5;
-    uint256 public premaxMintAmount = 10;
-    bool public paused = true;
-    bool public isOnlyWhitelisted = true;
-    bytes32 public merkleRoot = 0;
-
-    string public baseURI = "";
+    string public baseURI = "ipfs://xxx/";
     string public baseExtension = ".json";
-
+    bytes32 public merkleRoot = 0;
+    uint256 public wlcount = 0; // max:8count(0 - 7)
+    Phase public phase = Phase.BeforeMint;
+  
     constructor() ERC721A('nft_name', 'nft_symbol') {
-        //setBaseURI('ipfs://xxxxxxxxxxxxxxxxxxxxxx/');
-        //_safeMint(withdrawAddress, 0);
+        _safeMint(withdrawAddress, 0);
+    }
+
+    // internal
+    function _baseURI() internal view virtual override returns (string memory) {
+        return baseURI;
+    }
+
+    function _startTokenId() internal view virtual override returns (uint256) {
+        return 1;
+    }
+
+    function _getAuxforWL(address _owner) internal view returns (uint64) {
+        uint64 _auxval = _getAux(_owner);
+        return _auxval.get8_forAux(wlcount);
+    }
+
+    function _setAuxforWL(address _owner, uint64 _aux) internal{
+        uint64 _auxval = _getAux(_owner);
+        _setAux(_owner,_auxval.set8_forAux(wlcount,_aux));
+    }
+
+    function _setWLmintedCount(address _owner,uint256 _mintAmount) internal{
+        uint64 _auxval = _getAuxforWL(_owner);
+        unchecked {
+            _auxval += uint64(_mintAmount);
+        }
+        require(_auxval < 256,"minted count is over");
+        _setAuxforWL(_owner,_auxval);
     }
 
     // public---
-    function getMaxMintAmount() public view returns (uint256) {
-        if (isOnlyWhitelisted == true) {
-            return premaxMintAmount;
-        } else {
-            return maxMintAmount;
-        }
+    function tokenURI(uint256 tokenId) public view virtual override returns (string memory){
+        return string(abi.encodePacked(ERC721A.tokenURI(tokenId), baseExtension));
     }
 
-    function getRemainMintAmountWL(address value,bytes32[] calldata _merkleProof) public view returns (uint256) {
-        uint256 _MintedCount = balanceOf(value);
-        uint256 _MaxCount = premaxMintAmount;
+    function getWLRemain(address _value,uint256 _presaleMax,bytes32[] calldata _merkleProof
+    ) public view returns (uint256) {
         uint256 _Amount = 0;
-        if (isOnlyWhitelisted == true){
-            if(getWhitelistExit(value,_merkleProof) == true){
-                if(_MintedCount < _MaxCount){
-                    _Amount = _MaxCount - _MintedCount;
+        if(phase == Phase.WLMint){
+            if(getWLExit(_value,_presaleMax,_merkleProof) == true){
+                if(preLimitMint<_presaleMax){
+                    _Amount = preLimitMint - _getAuxforWL(_value);
+                }else{
+                    _Amount = _presaleMax - _getAuxforWL(_value);
                 }
-            }
+            } 
         }
         return _Amount;
     }
 
-    function getRemainMintAmount(address value) public view returns (uint256) {
-        uint256 _MintedCount = balanceOf(value);
-        uint256 _MaxCount = maxMintAmount;
-        uint256 _Amount = 0;
-        if (isOnlyWhitelisted == false){
-            if(_MintedCount < _MaxCount){
-                _Amount = _MaxCount - _MintedCount;
-            }
-        }
-        return _Amount;
-    }
-
-    function getWhitelistExit(address value,bytes32[] calldata _merkleProof)public view returns (bool) {
+    function getWLExit(address _value,uint256 _presaleMax,bytes32[] calldata _merkleProof
+    ) public view returns (bool) {
         bool _exit = false;
-        bytes32 _leaf = keccak256(abi.encodePacked(value));
+        bytes32 _leaf = keccak256(abi.encodePacked(_value,_presaleMax));
         if(MerkleProof.verify(_merkleProof, merkleRoot, _leaf) == true){
             _exit = true;
         }
         return _exit;
     }
    
-    // modifier---
-    modifier mintPaused() {
-        require(!paused, "mint is paused");
+    // modifier for mint---
+    modifier isActive(Phase _steage){
+        require(phase == _steage,"sale is not active");
         _;
     }
 
-    modifier isOnlyWhitelist(){
-        require(isOnlyWhitelisted,"OnlyWhitelisted");
+    modifier isCallerisUser(){
+        require(tx.origin == msg.sender,"the caller is another controler");
         _;
     }
 
-    modifier isNotOnlyWhitelist(){
-        require(!isOnlyWhitelisted,"Not OnlyWhitelisted");
-        _;
-    }
-    modifier isVeryfiyWhiteList(bytes32[] calldata _merkleProof) {
-        require(getWhitelistExit(msg.sender,_merkleProof),"You don't have a whitelist!");
+    modifier isVeryfiyWhiteList(uint256 _mintAmount,uint256 _presaleMax,bytes32[] calldata _merkleProof) {
+        require(getWLExit(msg.sender,_presaleMax,_merkleProof),"You don't have a whitelist!");
+        require(_mintAmount <= getWLRemain(msg.sender,_presaleMax,_merkleProof), "claim is over max amount at once");
         _;
     }
 
@@ -97,13 +110,13 @@ contract SmartGenerative is ERC721A, Ownable {
         _;
     }
 
-    modifier isMaxAmountAtOnceWL(uint256 _mintAmount,bytes32[] calldata _merkleProof) {
-        require(_mintAmount <= getRemainMintAmountWL(msg.sender,_merkleProof), "claim is over max amount at once");
-        _;
-    }
+    // modifier isMaxAmountAtOnceWL(uint256 _mintAmount,uint256 _presaleMax,bytes32[] calldata _merkleProof) {
+    //     require(_mintAmount <= getWLRemain(msg.sender,_presaleMax,_merkleProof), "claim is over max amount at once");
+    //     _;
+    // }
 
     modifier isMaxAmountAtOnce(uint256 _mintAmount) {
-        require(_mintAmount <= getRemainMintAmount(msg.sender), "claim is over max amount at once");
+        require(_mintAmount <=publicMaxMint, "claim is over max amount at once");
         _;
     }
     
@@ -112,81 +125,47 @@ contract SmartGenerative is ERC721A, Ownable {
         _;
     }
 
-    modifier isLimitAmount(uint256 _mintAmount) {
-        require(balanceOf(msg.sender) + _mintAmount <= getMaxMintAmount(),"Limit mint amount!");
-        _;
-    }
-
     modifier isEnoughEth(uint256 _mintAmount) {
         require(msg.value >= cost * _mintAmount, "not enough eth");
         _;
     }
 
-    /**
-    * @notice Mint from mint site(for WhiteList)
-    * @param _mintAmount Amount of mint
-    * @param _merkleProof for MerkleProof data
-    */
-    function mint_onlywl(uint256 _mintAmount,bytes32[] calldata _merkleProof)public payable
-        mintPaused
-        isOnlyWhitelist
-        isVeryfiyWhiteList(_merkleProof)
+    // mint
+    function mint_onlywl(uint256 _mintAmount,uint256 _presaleMax,bytes32[] calldata _merkleProof)public payable
+        isActive(Phase.WLMint)
+        isCallerisUser()
+        isVeryfiyWhiteList(_mintAmount,_presaleMax,_merkleProof)
         isMinAmount(_mintAmount)
-        isMaxAmountAtOnceWL(_mintAmount,_merkleProof)
+        //isMaxAmountAtOnceWL(_mintAmount,_presaleMax,_merkleProof)
         isMaxSupply(_mintAmount)
-        isLimitAmount(_mintAmount)
         isEnoughEth(_mintAmount){
-
+        
+        _setWLmintedCount(msg.sender, _mintAmount);
         _safeMint(msg.sender, _mintAmount);
     } 
 
-    /**
-    * @notice Mint from mint site
-    * @param _mintAmount Amount of mint
-    */
     function mint(uint256 _mintAmount) public payable
-        mintPaused
-        isNotOnlyWhitelist
+        isActive(Phase.PublicMint)
+        isCallerisUser()
         isMinAmount(_mintAmount)
         isMaxAmountAtOnce(_mintAmount)
         isMaxSupply(_mintAmount)
-        isLimitAmount(_mintAmount)
         isEnoughEth(_mintAmount){
 
         _safeMint(msg.sender, _mintAmount);
     }
    
-    // only owner--- 
-    // /**
-    // * @notice Use for airdrop
-    // * @param _airdropAddresses Airdrop address array
-    // * @param _UserMintAmount Airdrop amount of mint array
-    // * @dev onlyOwner
-    // */
-    // function airdropMint(address[] calldata _airdropAddresses , uint256[] memory _UserMintAmount) public onlyOwner{
-    //     uint256 supply = totalSupply();
-    //     uint256 _mintAmount = 0;
-    //     for (uint256 i = 0; i < _UserMintAmount.length; i++) {
-    //         _mintAmount += _UserMintAmount[i];
-    //     }
-    //     require(_mintAmount > 0, "need to mint at least 1 NFT");
-    //     require(supply + _mintAmount <= maxSupply, "max NFT limit exceeded");
-
-    //     for (uint256 i = 0; i < _UserMintAmount.length; i++) {
-    //         _safeMint(_airdropAddresses[i], _UserMintAmount[i] );
-    //     }
-    // }
-
+    // onlyOwner
     function setMaxSupply(uint256 _value) public onlyOwner {
         maxSupply = _value;
     }
 
-    function setCost(uint256 _newCost) public onlyOwner {
-        cost = _newCost;
+    function setCost(uint256 _value) public onlyOwner {
+        cost = _value;
     }
 
-    function setmaxMintAmount(uint256 _newmaxMintAmount) public onlyOwner {
-        maxMintAmount = _newmaxMintAmount;
+    function setmaxMintAmount(uint256 _value) public onlyOwner {
+        publicMaxMint = _value;
     }
   
     function setBaseURI(string memory _newBaseURI) public onlyOwner {
@@ -197,42 +176,21 @@ contract SmartGenerative is ERC721A, Ownable {
         baseExtension = _newBaseExtension;
     }
 
-    function pause(bool _state) public onlyOwner {
-        paused = _state;
+    function setPhase(Phase _newPhase) public onlyOwner {
+        require( _newPhase <= Phase.PublicMint,"no Valid");
+        phase = _newPhase;
     }
-
-    function setOnlyWhitelisted(bool _state) public onlyOwner {
-        isOnlyWhitelisted = _state;
-    }   
+    function setWlcount(uint256 _value) public onlyOwner {
+        require( 0 <= _value && _value < 8,"no Valid(0-7)");
+        wlcount = _value;
+    }
  
-    function withdraw() public payable onlyOwner {
-        (bool os, ) = payable(owner()).call{value: address(this).balance}("");
+    function withdraw() external onlyOwner {
+        (bool os, ) = payable(withdrawAddress).call{value: address(this).balance}("");
         require(os);
     }
 
-    /**
-    * @notice Set WhiteList's merkleRoot
-    * @param _merkleRoot Always set value in advance (if onlyWL)
-    */
-    function setPresaleRoots(bytes32 _merkleRoot) external onlyOwner {
+    function setMerkleRoot(bytes32 _merkleRoot) external onlyOwner {
         merkleRoot = _merkleRoot;
-    }
-
-    // ovverride---
-    function tokenURI(uint256 tokenId) public view virtual override returns (string memory){
-        return string(abi.encodePacked(ERC721A.tokenURI(tokenId), baseExtension));
-    }
-
-    function _baseURI() internal view virtual override returns (string memory) {
-        return baseURI;
-    }
-
-    /**
-    * @notice ERC721A override
-    * @return uint256 Return index at 1
-    * @dev Changed because ERC721A returns index 0
-    */
-    function _startTokenId() internal view virtual override returns (uint256) {
-        return 1;
-    }
+    }   
 }
