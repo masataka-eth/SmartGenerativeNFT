@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.9;
+pragma solidity ^0.8.12;
 
 import './external/erc721a/contracts/ERC721A.sol';
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
 import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import { BitOpe } from './libs/BitOpe.sol';
-//import "hardhat/console.sol"; // Hardhat console log
+import "hardhat/console.sol"; // Hardhat console log
 
 contract SmartGenerative is ERC721A, Ownable {
     using BitOpe for uint64;
+    using Strings for uint256;
+
     enum Phase {
         BeforeMint,
         WLMint,
@@ -17,7 +20,7 @@ contract SmartGenerative is ERC721A, Ownable {
 
     address public constant withdrawAddress = 0x6A1Ebf8f64aA793b4113E9D76864ea2264A5d482;
     uint256 public maxSupply = 10000;
-    uint256 public preLimitMint = 2;
+    uint256 public preLimitMint = 100;
     uint256 public publicMaxMint = 1;
     uint256 public cost = 0.001 ether;
     string public baseURI = "ipfs://xxx/";
@@ -27,7 +30,7 @@ contract SmartGenerative is ERC721A, Ownable {
     Phase public phase = Phase.BeforeMint;
   
     constructor() ERC721A('nft_name', 'nft_symbol') {
-        _safeMint(withdrawAddress, 0);
+        //_safeMint(withdrawAddress, 0);
     }
 
     // internal
@@ -81,7 +84,11 @@ contract SmartGenerative is ERC721A, Ownable {
     function getWLExit(address _value,uint256 _presaleMax,bytes32[] calldata _merkleProof
     ) public view returns (bool) {
         bool _exit = false;
-        bytes32 _leaf = keccak256(abi.encodePacked(_value,_presaleMax));
+        bytes32 _leaf = keccak256(abi.encodePacked(_value,_presaleMax));   
+
+        //console.log("_value %s _presaleMax %s", _value, _presaleMax);
+        //console.logBytes32(_leaf);
+
         if(MerkleProof.verify(_merkleProof, merkleRoot, _leaf) == true){
             _exit = true;
         }
@@ -101,7 +108,7 @@ contract SmartGenerative is ERC721A, Ownable {
 
     modifier isVeryfiyWhiteList(uint256 _mintAmount,uint256 _presaleMax,bytes32[] calldata _merkleProof) {
         require(getWLExit(msg.sender,_presaleMax,_merkleProof),"You don't have a whitelist!");
-        require(_mintAmount <= getWLRemain(msg.sender,_presaleMax,_merkleProof), "claim is over max amount at once");
+        require(_mintAmount <= getWLRemain(msg.sender,_presaleMax,_merkleProof), "claim is over max amount");
         _;
     }
 
