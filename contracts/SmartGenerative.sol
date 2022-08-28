@@ -5,18 +5,18 @@ import "erc721a/contracts/ERC721A.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+import "@openzeppelin/contracts/token/common/ERC2981.sol";
 import { BitOpe } from './libs/BitOpe.sol';
 import "./interface/ItokenURI.sol";
 import "hardhat/console.sol"; // Hardhat console log
 
-contract SmartGenerative is ERC721A, Ownable {
+contract SmartGenerative is ERC721A, Ownable,ERC2981 {
     using BitOpe for uint64;
     using Strings for uint256;
 
     enum Phase {
         BeforeMint,
         WLMint,
-        PublicMint,
         BurnMint
     }
 
@@ -27,7 +27,6 @@ contract SmartGenerative is ERC721A, Ownable {
     uint256 public maxSupply = 10000;
     uint256 public maxBurnMint = 2000;
     uint256 public preLimitMint = 1;
-    //uint256 public publicMaxMint = 1;
     uint256 public cost = 0.001 ether;
     string public baseURI = "ipfs://xxx/";
     string public baseExtension = ".json";
@@ -35,6 +34,8 @@ contract SmartGenerative is ERC721A, Ownable {
     uint256 public wlcount = 1; // max:65535 Always raiseOrder!
     uint256 public bmcount = 1; // max:65535 Always raiseOrder!
     Phase public phase = Phase.BeforeMint;
+    address public royaltyAddress;
+    uint96 public royaltyFee = 1000;    // default:10%
   
     constructor() ERC721A('nft_name', 'nft_symbol') {
         //_safeMint(withdrawAddress, 0);
@@ -118,6 +119,10 @@ contract SmartGenerative is ERC721A, Ownable {
     }
 
     // public---
+    function supportsInterface(bytes4 interfaceId) public view virtual override(ERC721A, ERC2981) returns (bool) {
+        return super.supportsInterface(interfaceId);
+    }
+
     function tokenURI(uint256 tokenId) public view virtual override returns (string memory){
         if(address(tokenuri) == address(0))
         {
@@ -176,72 +181,28 @@ contract SmartGenerative is ERC721A, Ownable {
         return _totalBurned();
     }
    
-    // modifier for mint---
-    modifier isActive(Phase _steage){
-        require(phase == _steage,"sale is not active");
-        _;
-    }
-
-    modifier isCallerisUser(){
-        require(tx.origin == msg.sender,"the caller is another controler");
-        _;
-    }
-
-    modifier isVeryfiyWL(uint256 _mintAmount,uint256 _wlAmountMax,bytes32[] calldata _merkleProof) {
-        require(getWLExit(msg.sender,_wlAmountMax,_merkleProof),"You don't have a whitelist!");
-        require(_mintAmount <= getWLRemain(msg.sender,_wlAmountMax,_merkleProof), "claim is over max amount");
-        _;
-    }
-    modifier isVeryfiyBM(uint256 _mintAmount,uint256 _wlAmountMax,bytes32[] calldata _merkleProof) {
-        require(getWLExit(msg.sender,_wlAmountMax,_merkleProof),"You don't have a whitelist!");
-        require(_mintAmount <= getBMRemain(msg.sender,_wlAmountMax,_merkleProof), "claim is over max amount");
-        _;
-    }
-
-    modifier isMinAmount(uint256 _mintAmount) {
-        require(_mintAmount > 0, "need to mint at least 1 NFT");
-        _;
-    }
-
-    // modifier isMaxAmountAtOnce(uint256 _mintAmount) {
-    //     require(_mintAmount <=publicMaxMint, "claim is over max amount at once");
-    //     _;
-    // }
-    
-    modifier isMaxSupply(uint256 _mintAmount) {
-        require(_mintAmount + totalSupply() <= maxSupply, "claim is over the max supply");
-        _;
-    }
-
-    modifier isTotalBurn(uint256 quantity) {
-        require(quantity + _totalBurned() <= maxBurnMint, "over total burn count");
-        _;
-    }
-
-    modifier isEnoughEth(uint256 _mintAmount) {
-        require(msg.value >= cost * _mintAmount, "not enough eth");
-        _;
-    }
-
     // mint
-    function mint_onlywl(uint256 _mintAmount,uint256 _wlAmountMax,bytes32[] calldata _merkleProof)public payable
-        isActive(Phase.WLMint)
-        isCallerisUser()
-        isVeryfiyWL(_mintAmount,_wlAmountMax,_merkleProof)
-        isMinAmount(_mintAmount)
-        isMaxSupply(_mintAmount)
-        isEnoughEth(_mintAmount) {
+    function mint_onlywl(uint256 _mintAmount,uint256 _wlAmountMax,bytes32[] calldata _merkleProof)public payable {
+        require(phase == Phase.WLMint,"sale is not active");
+        require(tx.origin == msg.sender,"the caller is another controler");
+        require(getWLExit(msg.sender,_wlAmountMax,_merkleProof),"You don't have a whitelist!");
+        require(_mintAmount > 0, "need to mint at least 1 NFT");
+        require(_mintAmount <= getWLRemain(msg.sender,_wlAmountMax,_merkleProof), "claim is over max amount");
+        require(_mintAmount + totalSupply() <= maxSupply, "claim is over the max supply");
+        require(msg.value >= cost * _mintAmount, "not enough eth");
     
         _setWLmintedCount(msg.sender, _mintAmount);
         _safeMint(msg.sender, _mintAmount);
     }
 
-    function  burnMint(uint256[] memory _burnTokenIds,uint256 _wlAmountMax,bytes32[] calldata _merkleProof) external payable
-        isActive(Phase.BurnMint)
-        isCallerisUser()
-        isVeryfiyBM(_burnTokenIds.length,_wlAmountMax,_merkleProof)
-        isTotalBurn(_burnTokenIds.length)
-        isEnoughEth(_burnTokenIds.length) {
+    function  burnMint(uint256[] memory _burnTokenIds,uint256 _wlAmountMax,bytes32[] calldata _merkleProof) external payable{
+        require(phase == Phase.BurnMint,"sale is not active");
+        require(tx.origin == msg.sender,"the caller is another controler");
+        require(getWLExit(msg.sender,_wlAmountMax,_merkleProof),"You don't have a whitelist!");
+        require(_burnTokenIds.length > 0, "need to mint at least 1 NFT");
+        require(_burnTokenIds.length <= getBMRemain(msg.sender,_wlAmountMax,_merkleProof), "claim is over max amount");
+        require(_burnTokenIds.length + _totalBurned() <= maxBurnMint, "over total burn count");
+        require(msg.value >= cost * _burnTokenIds.length, "not enough eth");
         
         _setBMmintedCount(msg.sender,_burnTokenIds.length);
         for (uint256 i = 0; i < _burnTokenIds.length; i++) {
@@ -251,19 +212,7 @@ contract SmartGenerative is ERC721A, Ownable {
         }
         _safeMint(msg.sender, _burnTokenIds.length);
     }
-
-    //Public sale is prohibited!
-    // function mint(uint256 _mintAmount) public payable
-    //     isActive(Phase.PublicMint)
-    //     isCallerisUser()
-    //     isMinAmount(_mintAmount)
-    //     isMaxAmountAtOnce(_mintAmount)
-    //     isMaxSupply(_mintAmount)
-    //     isEnoughEth(_mintAmount){
-
-    //     _safeMint(msg.sender, _mintAmount);
-    // }
-   
+  
     // onlyOwner
     function setMaxSupply(uint256 _value) public onlyOwner {
         maxSupply = _value;
@@ -276,10 +225,6 @@ contract SmartGenerative is ERC721A, Ownable {
     function setCost(uint256 _value) public onlyOwner {
         cost = _value;
     }
-
-    // function setmaxMintAmount(uint256 _value) public onlyOwner {
-    //     publicMaxMint = _value;
-    // }
   
     function setBaseURI(string memory _newBaseURI) public onlyOwner {
         baseURI = _newBaseURI;
@@ -290,7 +235,7 @@ contract SmartGenerative is ERC721A, Ownable {
     }
 
     function setPhase(Phase _newPhase) public onlyOwner {
-        require( _newPhase <= Phase.PublicMint,"no Valid");
+        require( _newPhase <= Phase.BurnMint,"no Valid");
         phase = _newPhase;
     }
 
@@ -311,5 +256,17 @@ contract SmartGenerative is ERC721A, Ownable {
     function withdraw() external onlyOwner {
         (bool os, ) = payable(withdrawAddress).call{value: address(this).balance}("");
         require(os);
+    }
+
+    //set Default Royalty._feeNumerator 500 = 5% Royalty
+    function setRoyaltyFee(uint96 _feeNumerator) external onlyOwner {
+        royaltyFee = _feeNumerator;
+        _setDefaultRoyalty(royaltyAddress, royaltyFee);
+    }
+
+    //Change the royalty address where royalty payouts are sent
+    function setRoyaltyAddress(address _royaltyAddress) external onlyOwner {
+        royaltyAddress = _royaltyAddress;
+        _setDefaultRoyalty(royaltyAddress, royaltyFee);
     }
 }
